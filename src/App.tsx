@@ -6,6 +6,7 @@ import jsPDF from 'jspdf';
 type View = 'scan' | 'results' | 'updated';
 
 interface CategoryScore {
+  key: KeywordResult['category'];
   name: string;
   score: number;
   found: number;
@@ -19,8 +20,18 @@ interface KeywordResult {
   inResume: boolean;
   frequency: number;
   jdFrequency: number;
-  category: 'hard' | 'soft' | 'other' | 'degree';
+  category: 'hard' | 'soft' | 'other' | 'degree' | 'jd';
   excluded: boolean;
+}
+
+interface JDCoverage {
+  coveragePercent: number;
+  totalWords: number;
+  matchedWords: number;
+  totalPhrases: number;
+  matchedPhrases: number;
+  uncoveredWords: { word: string; count: number }[];
+  uncoveredPhrases: { word: string; count: number }[];
 }
 
 interface AnalysisResult {
@@ -35,6 +46,7 @@ interface AnalysisResult {
     skills: string[];
     topKeywords: { word: string; frequency: number }[];
   };
+  jdCoverage: JDCoverage;
 }
 
 function App() {
@@ -267,6 +279,39 @@ function App() {
             ))}
           </div>
 
+          <div className="card coverage-card">
+            <div className="coverage-top">
+              <div className="coverage-title">
+                <h3>Word-by-Word JD Coverage</h3>
+                <p className="hint">
+                  Every meaningful word &amp; phrase from the job description is checked against your resume using
+                  smart stem matching (e.g. &quot;managing&quot; matches &quot;manage&quot;).
+                </p>
+              </div>
+              <div className="coverage-score">
+                <svg viewBox="0 0 36 36" className="circular-chart">
+                  <path className="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                  <path className="circle" strokeDasharray={`${analysis.jdCoverage.coveragePercent}, 100`} d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                </svg>
+                <span className="score-text">{analysis.jdCoverage.coveragePercent}%</span>
+              </div>
+            </div>
+            <div className="coverage-stats">
+              <div className="coverage-stat">
+                <strong>{analysis.jdCoverage.matchedWords}<span className="coverage-total">/{analysis.jdCoverage.totalWords}</span></strong>
+                <span>JD words found</span>
+              </div>
+              <div className="coverage-stat">
+                <strong>{analysis.jdCoverage.matchedPhrases}<span className="coverage-total">/{analysis.jdCoverage.totalPhrases}</span></strong>
+                <span>JD phrases found</span>
+              </div>
+              <div className="coverage-stat">
+                <strong>{analysis.keywords.filter(k => k.inResume && !k.excluded).length}</strong>
+                <span>keywords found</span>
+              </div>
+            </div>
+          </div>
+
           <div className="results-grid">
             <div className="card keywords-card">
               <h3>Missing Keywords</h3>
@@ -345,6 +390,34 @@ function App() {
                         <X size={14} /> {k.word}
                       </button>
                     ))}
+                  </div>
+                </div>
+                <div className="keyword-category">
+                  <h4>JD Terms (word-by-word)</h4>
+                  <div className="keyword-list">
+                    {analysis.keywords.filter(k => k.category === 'jd' && !k.inResume && !k.excluded && !excludedKeywords.includes(k.word)).map(k => (
+                      <button
+                        key={k.word}
+                        className={`keyword-chip missing ${selectedKeywords.includes(k.word) ? 'selected' : ''}`}
+                        onClick={() => {
+                          setSelectedKeywords(prev =>
+                            prev.includes(k.word) ? prev.filter(w => w !== k.word) : [...prev, k.word]
+                          );
+                        }}
+                      >
+                        {selectedKeywords.includes(k.word) ? <Check size={14} /> : <Plus size={14} />}
+                        {k.word}
+                        <span className="freq">{k.jdFrequency}x</span>
+                      </button>
+                    ))}
+                    {analysis.keywords.filter(k => k.category === 'jd' && k.excluded).map(k => (
+                      <button key={k.word} className="keyword-chip excluded">
+                        <X size={14} /> {k.word}
+                      </button>
+                    ))}
+                    {analysis.keywords.filter(k => k.category === 'jd' && !k.inResume && !k.excluded).length === 0 && (
+                      <span className="no-more">All job description terms are covered by your resume</span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -560,6 +633,144 @@ async function extractText(file: File): Promise<string> {
   return '';
 }
 
+function stem(word: string): string {
+  if (word.length <= 3) return word;
+  let w = word;
+  if (w.endsWith('ies') && w.length > 4) w = w.slice(0, -3) + 'y';
+  else if (w.endsWith('ing') && w.length > 5 && /[aeiou]/.test(w.slice(0, -3))) w = w.slice(0, -3);
+  else if (w.endsWith('ings') && w.length > 6) w = w.slice(0, -4);
+  else if (w.endsWith('ed') && w.length > 4 && /[aeiou]/.test(w.slice(0, -2))) w = w.slice(0, -2);
+  else if (w.endsWith('es') && w.length > 4) w = w.slice(0, -2);
+  else if (w.endsWith('s') && !w.endsWith('ss') && w.length > 4) w = w.slice(0, -1);
+  return w;
+}
+
+const JD_PHRASES = [
+  'project management', 'product management', 'data analysis', 'data analytics', 'data science', 'data modeling',
+  'data visualization', 'data engineering', 'data pipeline', 'machine learning', 'deep learning', 'user experience',
+  'user interface', 'ui design', 'ux research', 'business intelligence', 'business analysis', 'risk management',
+  'quality assurance', 'stakeholder management', 'time management', 'team leadership', 'software engineering',
+  'software development', 'web development', 'web applications', 'mobile development', 'full stack', 'front end',
+  'back end', 'api development', 'api design', 'test automation', 'automated testing', 'unit testing',
+  'integration testing', 'end to end', 'continuous integration', 'continuous deployment', 'ci/cd', 'agile development',
+  'agile environment', 'scrum master', 'cloud computing', 'cloud infrastructure', 'infrastructure as code',
+  'database management', 'database design', 'business requirements', 'customer service', 'customer satisfaction',
+  'problem solving', 'critical thinking', 'decision making', 'attention to detail', 'cross functional',
+  'communication skills', 'interpersonal skills', 'leadership skills', 'technical skills', 'project delivery',
+  'stakeholder engagement', 'strategic planning', 'budget management', 'vendor management', 'account management',
+  'financial analysis', 'financial reporting', 'process improvement', 'change management', 'talent acquisition',
+  'regulatory compliance', 'data privacy', 'cyber security', 'network security', 'operating systems',
+  'system administration', 'network administration', 'technical support', 'customer support', 'content creation',
+  'graphic design', 'product design', 'a/b testing', 'search engine', 'email marketing', 'inventory management',
+  'client relations', 'supply chain', 'market research', 'sales strategy', 'revenue growth', 'operations management'
+];
+
+const JD_STOPWORDS = [
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'from', 'has', 'have', 'he', 'her', 'his', 'i',
+  'if', 'in', 'into', 'is', 'it', 'its', 'may', 'me', 'my', 'nor', 'not', 'of', 'on', 'one', 'or', 'our', 'ours',
+  'she', 'so', 'than', 'that', 'the', 'their', 'them', 'then', 'there', 'these', 'they', 'this', 'to', 'too', 'us',
+  'was', 'we', 'were', 'what', 'when', 'where', 'which', 'while', 'who', 'whom', 'why', 'will', 'with', 'would',
+  'you', 'your', 'am', 'been', 'being', 'do', 'does', 'did', 'doing', 'had', 'having', 'can', 'could', 'should',
+  'shall', 'might', 'must', 'about', 'after', 'against', 'along', 'among', 'around', 'before', 'between', 'beyond',
+  'during', 'over', 'under', 'through', 'throughout', 'upon', 'via', 'within', 'without', 'across', 'onto', 'toward',
+  'towards', 'no', 'yes', 'none', 'each', 'every', 'few', 'many', 'more', 'most', 'much', 'other', 'same', 'some',
+  'such', 'very', 'quite', 'only', 'own', 'just', 'also', 'too', 'still', 'even', 'yet', 'because', 'until', 'since',
+  'once', 'again', 'here', 'now', 'ago', 'always', 'never', 'often', 'usually', 'together', 'etc', 'eg', 'ie', 'e.g', 'i.e'
+];
+
+const JD_GENERIC_WORDS = [
+  'work', 'works', 'working', 'experience', 'experienced', 'role', 'job', 'company', 'opportunity', 'candidate',
+  'candidates', 'requirements', 'requirement', 'responsibilities', 'responsibility', 'qualifications', 'qualification',
+  'duties', 'ability', 'able', 'ensure', 'including', 'include', 'includes', 'located', 'plus', 'preferred', 'minimum',
+  'years', 'year', 'relevant', 'performing', 'related', 'additional', 'various', 'such', 'desired', 'ideal', 'ideally',
+  'interested', 'looking', 'seek', 'seeking', 'join', 'apply', 'hiring', 'expertise', 'knowledge', 'background', 'will',
+  'daily', 'day', 'within', 'environment', 'environments', 'projects', 'project', 'highly', 'strong', 'excellent',
+  'great', 'good', 'proven', 'understand', 'understanding', 'learn', 'willing', 'complete', 'varying', 'part', 'per',
+  'monthly', 'salary', 'benefits', 'benefit', 'individuals', 'individual', 'suitable', 'successful', 'success', 'business',
+  'responsible', 'develop', 'develops', 'developing', 'developed', 'development', 'maintain', 'maintains', 'maintaining',
+  'maintained', 'maintenance', 'build', 'builds', 'building', 'built', 'using', 'use', 'used', 'requires', 'require',
+  'requires', 'required', 'knows', 'known', 'pipeline', 'pipelines', 'strategies', 'strategy', 'strategic',
+  'engineering', 'engineered', 'engineers', 'applications', 'application', 'software', 'technologies', 'technology',
+  'tools', 'tool', 'systems', 'system', 'processes', 'process', 'designing', 'designed', 'implement', 'implements',
+  'implementing', 'implemented', 'design', 'analyze', 'analyzes', 'analyzing', 'analyzed', 'analysis'
+];
+
+const JD_STOP_STEMS = new Set(JD_STOPWORDS.map(stem));
+const JD_GENERIC_STEMS = new Set(JD_GENERIC_WORDS.map(stem));
+
+function tokenizeText(text: string): string[] {
+  const lower = text.toLowerCase();
+  const tokens = lower.match(
+    /[a-z0-9#+]+\+[a-z0-9#+]*|[a-z0-9][a-z0-9#+]*#[a-z0-9#+]*|[a-z0-9]+(?:[/][a-z0-9]+)+|[a-z0-9]+(?:\.[a-z0-9]+)*/g
+  ) || [];
+  return tokens.filter(t => /[a-z]/.test(t) && t.length >= 2);
+}
+
+function isValidJDTerm(token: string): boolean {
+  if (!/[a-z]/.test(token)) return false;
+  const s = stem(token);
+  if (JD_STOP_STEMS.has(s)) return false;
+  if (JD_GENERIC_STEMS.has(s)) return false;
+  return true;
+}
+
+function computeJDCoverage(resumeText: string, jdText: string): JDCoverage {
+  const resumeTokens = tokenizeText(resumeText);
+  const resumeStems = new Set(resumeTokens.map(stem));
+
+  const jdWordCounts = new Map<string, number>();
+  for (const token of tokenizeText(jdText)) {
+    if (isValidJDTerm(token)) {
+      jdWordCounts.set(token, (jdWordCounts.get(token) || 0) + 1);
+    }
+  }
+
+  const phraseCounts = new Map<string, number>();
+  const jdLower = jdText.toLowerCase();
+  for (const phrase of JD_PHRASES) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const matches = jdLower.match(new RegExp(escaped, 'g'));
+    if (matches) phraseCounts.set(phrase, matches.length);
+  }
+
+  let matchedWords = 0;
+  let totalWords = 0;
+  const uncoveredWords: { word: string; count: number }[] = [];
+  for (const [w, c] of jdWordCounts) {
+    totalWords += c;
+    if (resumeStems.has(stem(w))) matchedWords += c;
+    else uncoveredWords.push({ word: w, count: c });
+  }
+
+  let matchedPhrases = 0;
+  let totalPhrases = 0;
+  const uncoveredPhrases: { word: string; count: number }[] = [];
+  for (const [phrase, c] of phraseCounts) {
+    totalPhrases += c;
+    const allCovered = phrase.split(' ').every(p => resumeStems.has(stem(p)));
+    if (allCovered) matchedPhrases += c;
+    else uncoveredPhrases.push({ word: phrase, count: c });
+  }
+
+  const wordCoverage = totalWords > 0 ? matchedWords / totalWords : 1;
+  const phraseCoverage = totalPhrases > 0 ? matchedPhrases / totalPhrases : 1;
+  const coveragePercent =
+    totalWords + totalPhrases > 0
+      ? Math.round(100 * (0.7 * wordCoverage + 0.3 * phraseCoverage))
+      : 100;
+
+  const sortDesc = (a: { word: string; count: number }, b: { word: string; count: number }) => b.count - a.count;
+  return {
+    coveragePercent,
+    totalWords,
+    matchedWords,
+    totalPhrases,
+    matchedPhrases,
+    uncoveredWords: uncoveredWords.sort(sortDesc),
+    uncoveredPhrases: uncoveredPhrases.sort(sortDesc),
+  };
+}
+
 function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult {
   const resumeLower = resumeText.toLowerCase();
   const jdLower = jdText.toLowerCase();
@@ -593,21 +804,63 @@ function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult
     jdWordFreq.set(w, (jdWordFreq.get(w) || 0) + 1);
   }
 
-  const keywords: KeywordResult[] = Array.from(keywordMap.values()).map(k => ({
-    ...k,
-    inResume: resumeLower.includes(k.word.toLowerCase()),
-    frequency: jdWordFreq.get(k.word.toLowerCase()) || k.jdFrequency,
-    excluded: false,
-  }));
+  const coverage = computeJDCoverage(resumeText, jdText);
+
+  const coverageTerms: { word: string; count: number }[] = [
+    ...coverage.uncoveredWords,
+    ...coverage.uncoveredPhrases,
+  ]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 24);
+
+  const jdTerms: KeywordResult[] = [];
+  const jdSeen = new Set<string>();
+  for (const term of coverageTerms) {
+    if (keywordMap.has(term.word) || jdSeen.has(term.word)) continue;
+    jdSeen.add(term.word);
+    jdTerms.push({
+      word: term.word,
+      inResume: false,
+      frequency: term.count,
+      jdFrequency: term.count,
+      category: 'jd',
+      excluded: false,
+    });
+  }
+
+  const keywords: KeywordResult[] = [
+    ...Array.from(keywordMap.values()).map(k => ({
+      ...k,
+      inResume: resumeLower.includes(k.word.toLowerCase()),
+      frequency: jdWordFreq.get(k.word.toLowerCase()) || k.jdFrequency,
+      excluded: false,
+    })),
+    ...jdTerms,
+  ];
 
   const categoryScores = calculateCategoryScores(keywords);
 
-  const matchScore = Math.round(keywords.filter(k => k.inResume && !k.excluded).length / Math.max(keywords.filter(k => !k.excluded).length, 1) * 100);
+  const jdCategoryIndex = categoryScores.findIndex(c => c.key === 'jd');
+  if (jdCategoryIndex >= 0) {
+    categoryScores[jdCategoryIndex] = {
+      ...categoryScores[jdCategoryIndex],
+      score: coverage.coveragePercent,
+      found: coverage.matchedWords + coverage.matchedPhrases,
+      total: coverage.totalWords + coverage.totalPhrases,
+    };
+  }
+
+  const kwMatch = Math.round(keywords.filter(k => k.inResume && !k.excluded).length / Math.max(keywords.filter(k => !k.excluded).length, 1) * 100);
+  const matchScore = Math.round(kwMatch * 0.5 + coverage.coveragePercent * 0.5);
 
   const suggestions: string[] = [];
   const missingHard = keywords.filter(k => k.category === 'hard' && !k.inResume && !k.excluded);
   const missingSoft = keywords.filter(k => k.category === 'soft' && !k.inResume && !k.excluded);
-  
+
+  if (coverage.coveragePercent < 100) {
+    const topUncovered = coverageTerms.slice(0, 6).map(t => t.word).join(', ');
+    suggestions.push(`Word-by-word JD coverage is ${coverage.coveragePercent}% (${coverage.matchedWords}/${coverage.totalWords} words, ${coverage.matchedPhrases}/${coverage.totalPhrases} phrases). Add missing terms like: ${topUncovered}.`);
+  }
   if (missingHard.length > 0) {
     suggestions.push(`Add hard skills: ${missingHard.slice(0, 5).map(k => k.word).join(', ')}.`);
   }
@@ -637,6 +890,7 @@ function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult
     categoryScores,
     suggestions,
     missingKeywords,
+    jdCoverage: coverage,
     jdAnalysis: {
       responsibilities,
       requirements,
@@ -651,6 +905,7 @@ function calculateCategoryScores(keywords: KeywordResult[]): CategoryScore[] {
     { key: 'hard', name: 'Hard Skills', icon: <Target size={18} />, color: 'blue' },
     { key: 'soft', name: 'Soft Skills', icon: <Sparkles size={18} />, color: 'green' },
     { key: 'other', name: 'Other Keywords', icon: <FileText size={18} />, color: 'orange' },
+    { key: 'jd', name: 'JD Terms', icon: <Search size={18} />, color: 'red' },
     { key: 'degree', name: 'Degree & Title', icon: <BriefcaseBusiness size={18} />, color: 'purple' },
   ];
 
@@ -659,7 +914,7 @@ function calculateCategoryScores(keywords: KeywordResult[]): CategoryScore[] {
     const found = catKeywords.filter(k => k.inResume && !k.excluded).length;
     const total = catKeywords.filter(k => !k.excluded).length;
     const score = total > 0 ? Math.round((found / total) * 100) : 0;
-    return { name: cat.name, score, found, total, icon: cat.icon, color: cat.color };
+    return { key: cat.key, name: cat.name, score, found, total, icon: cat.icon, color: cat.color };
   });
 }
 
