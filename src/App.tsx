@@ -19,6 +19,7 @@ interface KeywordResult {
   word: string;
   inResume: boolean;
   frequency: number;
+  resumeFrequency: number;
   jdFrequency: number;
   category: 'hard' | 'soft' | 'other' | 'degree' | 'jd';
   excluded: boolean;
@@ -49,12 +50,23 @@ interface AnalysisResult {
   jdCoverage: JDCoverage;
 }
 
+type SkillFilter = 'all' | 'missing' | 'found';
+
+/** Formats a score with up to 2 decimals (99.99, 87.5, 100). */
+function fmtScore(n: number): string {
+  const s = n.toFixed(2);
+  if (s.endsWith('.00')) return s.slice(0, -3);
+  return s.replace(/0+$/, '').replace(/\.$/, '');
+}
+
 function App() {
   const [view, setView] = useState<View>('scan');
   const [resumeText, setResumeText] = useState('');
   const [resumeFileName, setResumeFileName] = useState('');
   const [jobDescription, setJobDescription] = useState('');
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [postAnalysis, setPostAnalysis] = useState<AnalysisResult | null>(null);
+  const [skillFilter, setSkillFilter] = useState<SkillFilter>('all');
   const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
   const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]);
   const [updatedResume, setUpdatedResume] = useState('');
@@ -100,6 +112,8 @@ function App() {
 
     const result = performDeepAnalysis(resumeText, jobDescription);
     setAnalysis(result);
+    setPostAnalysis(null);
+    setSkillFilter('all');
     setSelectedKeywords([]);
     setExcludedKeywords([]);
     setIsAnalyzing(false);
@@ -111,21 +125,84 @@ function App() {
     setSelectedKeywords(prev => prev.filter(k => k !== word));
   };
 
+  const handleToggleKeyword = (word: string) => {
+    setSelectedKeywords(prev => prev.includes(word) ? prev.filter(w => w !== word) : [...prev, word]);
+  };
+
   const handleAcceptKeywords = () => {
     if (!analysis || selectedKeywords.length === 0) return;
     const updated = insertKeywordsIntoSections(resumeText, selectedKeywords);
     setUpdatedResume(updated);
+    // Deep re-analysis of the updated resume against the same JD:
+    // this reports the REAL new match score + JD coverage, not an estimate.
+    setPostAnalysis(performDeepAnalysis(updated, jobDescription));
     setView('updated');
   };
 
   const reset = () => {
     setView('scan');
     setAnalysis(null);
+    setPostAnalysis(null);
+    setSkillFilter('all');
     setSelectedKeywords([]);
     setExcludedKeywords([]);
     setUpdatedResume('');
     setError('');
     setUploadProgress(0);
+  };
+
+  const isExcluded = (k: KeywordResult) => k.excluded || excludedKeywords.includes(k.word);
+
+  // Complete list of every skill/keyword/term extracted from the JD:
+  // missing items first (so gaps are obvious), then most frequent.
+  const skillList = (analysis?.keywords ?? []).slice().sort((a, b) => {
+    if (a.inResume !== b.inResume) return a.inResume ? 1 : -1;
+    if (isExcluded(a) !== isExcluded(b)) return isExcluded(a) ? 1 : -1;
+    return b.jdFrequency - a.jdFrequency;
+  });
+  const skillCounts = {
+    all: skillList.length,
+    missing: skillList.filter(k => !k.inResume && !isExcluded(k)).length,
+    found: skillList.filter(k => k.inResume && !isExcluded(k)).length,
+  };
+  const visibleSkills = skillList.filter(k => {
+    if (skillFilter === 'missing') return !k.inResume && !isExcluded(k);
+    if (skillFilter === 'found') return k.inResume && !isExcluded(k);
+    return true;
+  });
+
+  const renderKeywordChips = (category: KeywordResult['category'], cap?: number) => {
+    if (!analysis) return null;
+    const missing = analysis.keywords.filter(k => k.category === category && !k.inResume && !isExcluded(k));
+    const excluded = analysis.keywords.filter(k => k.category === category && isExcluded(k));
+    const shown = cap ? missing.slice(0, cap) : missing;
+    const hidden = missing.length - shown.length;
+    return (
+      <>
+        {shown.map(k => (
+          <button
+            key={k.word}
+            className={`keyword-chip missing ${selectedKeywords.includes(k.word) ? 'selected' : ''}`}
+            onClick={() => handleToggleKeyword(k.word)}
+          >
+            {selectedKeywords.includes(k.word) ? <Check size={14} /> : <Plus size={14} />}
+            {k.word}
+            <span className="freq">{k.jdFrequency}x</span>
+          </button>
+        ))}
+        {excluded.map(k => (
+          <button key={k.word} className="keyword-chip excluded" disabled>
+            <X size={14} /> {k.word}
+          </button>
+        ))}
+        {hidden > 0 && (
+          <span className="no-more">+{hidden} more listed in the Complete Skill Match List below</span>
+        )}
+        {missing.length === 0 && excluded.length === 0 && (
+          <span className="no-more">Fully covered by your resume</span>
+        )}
+      </>
+    );
   };
 
   return (
@@ -255,11 +332,11 @@ function App() {
                   <path className="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
                   <path className="circle" strokeDasharray={`${analysis.matchScore}, 100`} d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
                 </svg>
-                <span className="score-text">{analysis.matchScore}%</span>
+                <span className="score-text">{fmtScore(analysis.matchScore)}%</span>
               </div>
               <div className="score-label">
                 <strong>Overall Match Score</strong>
-                <span>Job-specific compatibility</span>
+                <span>Deep word-by-word JD compatibility</span>
               </div>
             </div>
           </div>
@@ -284,8 +361,9 @@ function App() {
               <div className="coverage-title">
                 <h3>Word-by-Word JD Coverage</h3>
                 <p className="hint">
-                  Every meaningful word &amp; phrase from the job description is checked against your resume using
-                  smart stem matching (e.g. &quot;managing&quot; matches &quot;manage&quot;).
+                  Every meaningful word &amp; phrase from the job description is deep-checked against your resume using
+                  smart stem + alias matching (e.g. &quot;managing&quot; matches &quot;manage&quot;, &quot;JS&quot; matches
+                  &quot;JavaScript&quot;). Score is precise to 2 decimals.
                 </p>
               </div>
               <div className="coverage-score">
@@ -293,7 +371,7 @@ function App() {
                   <path className="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
                   <path className="circle" strokeDasharray={`${analysis.jdCoverage.coveragePercent}, 100`} d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
                 </svg>
-                <span className="score-text">{analysis.jdCoverage.coveragePercent}%</span>
+                <span className="score-text">{fmtScore(analysis.jdCoverage.coveragePercent)}%</span>
               </div>
             </div>
             <div className="coverage-stats">
@@ -312,6 +390,69 @@ function App() {
             </div>
           </div>
 
+          <div className="card skilllist-card">
+            <div className="skilllist-top">
+              <div className="skilllist-title">
+                <h3>Complete Skill Match List</h3>
+                <p className="hint">
+                  Every skill, tool, qualification and meaningful term extracted from the job description — deep-matched
+                  against your resume with stem + alias intelligence. Your goal: cover 100% of this list.
+                </p>
+              </div>
+              <div className="skilllist-filters">
+                <button className={`skill-filter ${skillFilter === 'all' ? 'active' : ''}`} onClick={() => setSkillFilter('all')}>
+                  All ({skillCounts.all})
+                </button>
+                <button className={`skill-filter ${skillFilter === 'missing' ? 'active' : ''}`} onClick={() => setSkillFilter('missing')}>
+                  Missing ({skillCounts.missing})
+                </button>
+                <button className={`skill-filter ${skillFilter === 'found' ? 'active' : ''}`} onClick={() => setSkillFilter('found')}>
+                  Found ({skillCounts.found})
+                </button>
+              </div>
+            </div>
+            <div className="skill-table">
+              <div className="skill-table-header">
+                <span>Skill / Keyword</span>
+                <span>Category</span>
+                <span>JD ×</span>
+                <span>Resume ×</span>
+                <span>Status</span>
+              </div>
+              <div className="skill-table-body">
+                {visibleSkills.map(k => (
+                  <div className="skill-table-row" key={k.word}>
+                    <span className="skill-name">{k.word}</span>
+                    <span><span className={`missing-cat ${k.category}`}>{k.category}</span></span>
+                    <span className="skill-num">{k.jdFrequency}×</span>
+                    <span className="skill-num">{isExcluded(k) ? '—' : k.resumeFrequency}×</span>
+                    <span className="skill-status">
+                      {isExcluded(k) ? (
+                        <em className="status-excluded">Excluded</em>
+                      ) : k.inResume ? (
+                        <em className="status-found"><Check size={12} /> Found</em>
+                      ) : (
+                        <>
+                          <em className="status-missing"><AlertCircle size={12} /> Missing</em>
+                          <button
+                            className="action-btn add"
+                            title={selectedKeywords.includes(k.word) ? 'Remove from selection' : 'Add to resume'}
+                            onClick={() => handleToggleKeyword(k.word)}
+                          >
+                            {selectedKeywords.includes(k.word) ? <Check size={14} /> : <Plus size={14} />}
+                          </button>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                ))}
+                {visibleSkills.length === 0 && (
+                  <div className="skill-table-empty">Nothing here — switch filters to see the full list.</div>
+                )}
+              </div>
+            </div>
+          </div>
+
           <div className="results-grid">
             <div className="card keywords-card">
               <h3>Missing Keywords</h3>
@@ -319,106 +460,23 @@ function App() {
               <div className="keyword-categories">
                 <div className="keyword-category">
                   <h4>Hard Skills</h4>
-                  <div className="keyword-list">
-                    {analysis.keywords.filter(k => k.category === 'hard' && !k.inResume && !k.excluded && !excludedKeywords.includes(k.word)).map(k => (
-                      <button
-                        key={k.word}
-                        className={`keyword-chip missing ${selectedKeywords.includes(k.word) ? 'selected' : ''}`}
-                        onClick={() => {
-                          setSelectedKeywords(prev =>
-                            prev.includes(k.word) ? prev.filter(w => w !== k.word) : [...prev, k.word]
-                          );
-                        }}
-                      >
-                        {selectedKeywords.includes(k.word) ? <Check size={14} /> : <Plus size={14} />}
-                        {k.word}
-                        <span className="freq">{k.jdFrequency}x</span>
-                      </button>
-                    ))}
-                    {analysis.keywords.filter(k => k.category === 'hard' && !k.inResume && k.excluded).map(k => (
-                      <button key={k.word} className="keyword-chip excluded">
-                        <X size={14} /> {k.word}
-                      </button>
-                    ))}
-                  </div>
+                  <div className="keyword-list">{renderKeywordChips('hard')}</div>
                 </div>
                 <div className="keyword-category">
                   <h4>Soft Skills</h4>
-                  <div className="keyword-list">
-                    {analysis.keywords.filter(k => k.category === 'soft' && !k.inResume && !k.excluded && !excludedKeywords.includes(k.word)).map(k => (
-                      <button
-                        key={k.word}
-                        className={`keyword-chip missing ${selectedKeywords.includes(k.word) ? 'selected' : ''}`}
-                        onClick={() => {
-                          setSelectedKeywords(prev =>
-                            prev.includes(k.word) ? prev.filter(w => w !== k.word) : [...prev, k.word]
-                          );
-                        }}
-                      >
-                        {selectedKeywords.includes(k.word) ? <Check size={14} /> : <Plus size={14} />}
-                        {k.word}
-                        <span className="freq">{k.jdFrequency}x</span>
-                      </button>
-                    ))}
-                    {analysis.keywords.filter(k => k.category === 'soft' && !k.inResume && k.excluded).map(k => (
-                      <button key={k.word} className="keyword-chip excluded">
-                        <X size={14} /> {k.word}
-                      </button>
-                    ))}
-                  </div>
+                  <div className="keyword-list">{renderKeywordChips('soft')}</div>
                 </div>
                 <div className="keyword-category">
                   <h4>Other Keywords</h4>
-                  <div className="keyword-list">
-                    {analysis.keywords.filter(k => k.category === 'other' && !k.inResume && !k.excluded && !excludedKeywords.includes(k.word)).map(k => (
-                      <button
-                        key={k.word}
-                        className={`keyword-chip missing ${selectedKeywords.includes(k.word) ? 'selected' : ''}`}
-                        onClick={() => {
-                          setSelectedKeywords(prev =>
-                            prev.includes(k.word) ? prev.filter(w => w !== k.word) : [...prev, k.word]
-                          );
-                        }}
-                      >
-                        {selectedKeywords.includes(k.word) ? <Check size={14} /> : <Plus size={14} />}
-                        {k.word}
-                        <span className="freq">{k.jdFrequency}x</span>
-                      </button>
-                    ))}
-                    {analysis.keywords.filter(k => k.category === 'other' && !k.inResume && k.excluded).map(k => (
-                      <button key={k.word} className="keyword-chip excluded">
-                        <X size={14} /> {k.word}
-                      </button>
-                    ))}
-                  </div>
+                  <div className="keyword-list">{renderKeywordChips('other')}</div>
+                </div>
+                <div className="keyword-category">
+                  <h4>Degree &amp; Title</h4>
+                  <div className="keyword-list">{renderKeywordChips('degree')}</div>
                 </div>
                 <div className="keyword-category">
                   <h4>JD Terms (word-by-word)</h4>
-                  <div className="keyword-list">
-                    {analysis.keywords.filter(k => k.category === 'jd' && !k.inResume && !k.excluded && !excludedKeywords.includes(k.word)).map(k => (
-                      <button
-                        key={k.word}
-                        className={`keyword-chip missing ${selectedKeywords.includes(k.word) ? 'selected' : ''}`}
-                        onClick={() => {
-                          setSelectedKeywords(prev =>
-                            prev.includes(k.word) ? prev.filter(w => w !== k.word) : [...prev, k.word]
-                          );
-                        }}
-                      >
-                        {selectedKeywords.includes(k.word) ? <Check size={14} /> : <Plus size={14} />}
-                        {k.word}
-                        <span className="freq">{k.jdFrequency}x</span>
-                      </button>
-                    ))}
-                    {analysis.keywords.filter(k => k.category === 'jd' && k.excluded).map(k => (
-                      <button key={k.word} className="keyword-chip excluded">
-                        <X size={14} /> {k.word}
-                      </button>
-                    ))}
-                    {analysis.keywords.filter(k => k.category === 'jd' && !k.inResume && !k.excluded).length === 0 && (
-                      <span className="no-more">All job description terms are covered by your resume</span>
-                    )}
-                  </div>
+                  <div className="keyword-list">{renderKeywordChips('jd', 40)}</div>
                 </div>
               </div>
             </div>
@@ -432,7 +490,7 @@ function App() {
                   <span>JD Freq</span>
                   <span>Action</span>
                 </div>
-                {analysis.missingKeywords.filter(k => !k.excluded && !excludedKeywords.includes(k.word)).map(k => (
+                {analysis.missingKeywords.filter(k => !isExcluded(k)).slice(0, 50).map(k => (
                   <div key={k.word} className="missing-table-row">
                     <span className="missing-keyword">{k.word}</span>
                     <span className={`missing-cat ${k.category}`}>{k.category}</span>
@@ -440,7 +498,7 @@ function App() {
                     <div className="missing-actions">
                       <button
                         className="action-btn add"
-                        onClick={() => setSelectedKeywords(prev => prev.includes(k.word) ? prev.filter(w => w !== k.word) : [...prev, k.word])}
+                        onClick={() => handleToggleKeyword(k.word)}
                         title={selectedKeywords.includes(k.word) ? 'Remove from selection' : 'Add to resume'}
                       >
                         {selectedKeywords.includes(k.word) ? <Check size={14} /> : <Plus size={14} />}
@@ -455,6 +513,11 @@ function App() {
                     </div>
                   </div>
                 ))}
+                {analysis.missingKeywords.filter(k => !isExcluded(k)).length > 50 && (
+                  <div className="missing-table-more">
+                    +{analysis.missingKeywords.filter(k => !isExcluded(k)).length - 50} more missing terms — see the Complete Skill Match List above.
+                  </div>
+                )}
               </div>
 
               <div className="stats-grid">
@@ -472,7 +535,7 @@ function App() {
                     <AlertCircle size={18} />
                   </div>
                   <div>
-                    <strong>{analysis.missingKeywords.filter(k => !k.excluded && !excludedKeywords.includes(k.word)).length}</strong>
+                    <strong>{analysis.missingKeywords.filter(k => !isExcluded(k)).length}</strong>
                     <span>Missing</span>
                   </div>
                 </div>
@@ -515,13 +578,13 @@ function App() {
               <Check size={48} />
             </div>
             <h1>Resume Updated Successfully!</h1>
-            <p>Added {selectedKeywords.length} keywords to optimize your resume.</p>
+            <p>Added {selectedKeywords.length} keywords — your resume was re-analyzed deep against the same job description.</p>
           </div>
           <div className="updated-layout">
             <div className="card resume-preview-card">
               <div className="preview-header">
                 <h3>Updated Resume</h3>
-                <button className="btn-download" onClick={() => generatePDF(updatedResume, analysis!, selectedKeywords, resumeFileName)}>
+                <button className="btn-download" onClick={() => generatePDF(updatedResume, postAnalysis ?? analysis!, selectedKeywords, resumeFileName)}>
                   <Download size={16} /> Download PDF
                 </button>
               </div>
@@ -532,23 +595,41 @@ function App() {
               <div className="summary-list">
                 <div className="summary-item">
                   <span>Original Match Score</span>
-                  <strong>{analysis?.matchScore || 0}%</strong>
+                  <strong>{fmtScore(analysis?.matchScore || 0)}%</strong>
+                </div>
+                <div className="summary-item">
+                  <span>New Match Score</span>
+                  <strong className="success">{fmtScore(postAnalysis?.matchScore ?? (analysis?.matchScore || 0))}%</strong>
+                </div>
+                <div className="summary-item">
+                  <span>JD Word Coverage</span>
+                  <strong className="success">{fmtScore(postAnalysis?.jdCoverage.coveragePercent ?? (analysis?.jdCoverage.coveragePercent || 0))}%</strong>
+                </div>
+                <div className="summary-item">
+                  <span>Skills Found</span>
+                  <strong className="success">
+                    {postAnalysis ? `${postAnalysis.keywords.filter(k => k.inResume && !k.excluded).length}/${postAnalysis.keywords.filter(k => !k.excluded).length}` : '—'}
+                  </strong>
                 </div>
                 <div className="summary-item">
                   <span>Keywords Added</span>
                   <strong>{selectedKeywords.length}</strong>
                 </div>
-                <div className="summary-item">
-                  <span>Estimated New Score</span>
-                  <strong className="success">
-                    {Math.min(100, Math.round(((analysis?.keywords.filter(k => k.inResume).length || 0) + selectedKeywords.length) / Math.max((analysis?.keywords.filter(k => !k.excluded).length || 1), 1) * 100))}%
-                  </strong>
-                </div>
-                <div className="summary-item">
-                  <span>Status</span>
-                  <strong className="success">Optimized</strong>
-                </div>
               </div>
+              {postAnalysis && postAnalysis.missingKeywords.filter(k => !k.excluded).length > 0 && (
+                <div className="still-missing">
+                  <strong>
+                    {postAnalysis.missingKeywords.filter(k => !k.excluded).length} terms still not covered
+                  </strong>
+                  <span>
+                    {postAnalysis.missingKeywords.filter(k => !k.excluded).slice(0, 8).map(k => k.word).join(', ')}
+                    {postAnalysis.missingKeywords.filter(k => !k.excluded).length > 8 ? '…' : ''}
+                  </span>
+                  <button className="btn-secondary" onClick={reset}>
+                    <Plus size={18} /> Back to add more
+                  </button>
+                </div>
+              )}
               <button className="btn-secondary" onClick={reset}>
                 <Plus size={18} /> New Scan
               </button>
@@ -604,7 +685,7 @@ function formatSkillsSection(keywords: string[]): string {
 }
 
 function formatExperienceSection(keywords: string[]): string {
-  return `\n\nAdditional Experience Highlights\n${'='.repeat(35)}\n${keywords.map(k => `• Demonstrated ${k.toLowerCase()} in professional settings`).join('\n')}`;
+  return `\n\nAdditional Keywords For This Role\n${'='.repeat(35)}\n${keywords.map(k => `• ${k}`).join('\n')}`;
 }
 
 async function extractText(file: File): Promise<string> {
@@ -643,6 +724,115 @@ function stem(word: string): string {
   else if (w.endsWith('es') && w.length > 4) w = w.slice(0, -2);
   else if (w.endsWith('s') && !w.endsWith('ss') && w.length > 4) w = w.slice(0, -1);
   return w;
+}
+
+/** Common abbreviations/aliases normalized on both sides (JD and resume) to the same canonical token. */
+const TOKEN_ALIASES: Record<string, string> = {
+  js: 'javascript',
+  ts: 'typescript',
+  reactjs: 'react',
+  'react.js': 'react',
+  reactjsx: 'react',
+  vuejs: 'vue',
+  'vue.js': 'vue',
+  nuxtjs: 'nuxt',
+  angularjs: 'angular',
+  nodejs: 'node',
+  'node.js': 'node',
+  expressjs: 'express',
+  'express.js': 'express',
+  k8s: 'kubernetes',
+  mongo: 'mongodb',
+  postgres: 'postgresql',
+  pgsql: 'postgresql',
+  golang: 'go',
+  python3: 'python',
+  py: 'python',
+  ml: 'machine learning',
+  'css3': 'css',
+  'html5': 'html',
+  'htm': 'html',
+};
+
+const TOKEN_NORMALIZE_RE = /[^a-z0-9+#/.\-\s]/g;
+
+/** Canonical form of a term/token (lower-case, punctuation-light, alias-expanded). */
+function normalizeToken(t: string): string {
+  const w = t.toLowerCase().replace(TOKEN_NORMALIZE_RE, '').replace(/\s+/g, ' ').trim();
+  return TOKEN_ALIASES[w] || w;
+}
+
+interface TextIndex {
+  tokenList: string[];
+  stemList: string[];
+  tokens: Set<string>;
+  stems: Set<string>;
+  /** ' ' + normalized tokens joined + ' ' — enables adjacency checks like "a/b testing". */
+  phraseBlob: string;
+}
+
+/** Builds a searchable index of a resume: normalized tokens + word stems. */
+function buildTextIndex(text: string): TextIndex {
+  const tokenList = tokenizeText(text).map(normalizeToken).filter(Boolean);
+  const stemList = tokenList.map(stem);
+  return {
+    tokenList,
+    stemList,
+    tokens: new Set(tokenList),
+    stems: new Set(stemList),
+    phraseBlob: ' ' + tokenList.join(' ') + ' ',
+  };
+}
+
+/** Splits a term into normalized single tokens for phrase matching. */
+function splitTerm(term: string): string[] {
+  return normalizeToken(term).split(/[\s/+&]+/).filter(t => t.length >= 2);
+}
+
+/**
+ * Deep coverage test: a term is covered when its canonical form, its stem, or (for
+ * phrases) its normalized adjacency sequence appears in the resume index — with alias
+ * awareness. As a fallback, a phrase is covered when every word of it appears anywhere.
+ */
+function termCovered(term: string, index: TextIndex): boolean {
+  const norm = normalizeToken(term);
+  if (!norm) return false;
+  if (index.tokens.has(norm)) return true;
+  if (index.stems.has(stem(norm))) return true;
+  // Adjacency with punctuation preserved: "a/b testing" in JD matches "a/b testing" in resume.
+  if (index.phraseBlob.includes(' ' + norm + ' ')) return true;
+  const parts = splitTerm(term);
+  if (parts.length <= 1) return false;
+  // Fallback: each word covered anywhere in the resume.
+  return parts.every(p => index.tokens.has(p) || index.stems.has(stem(p)));
+}
+
+/** Counts how many times a term appears in the resume index (stem-aware, phrase-aware). */
+function countTermInIndex(term: string, index: TextIndex): number {
+  const norm = normalizeToken(term);
+  if (index.tokens.has(norm)) {
+    let n = 0;
+    for (const t of index.tokenList) if (t === norm) n++;
+    return n;
+  }
+  const parts = splitTerm(term);
+  if (parts.length === 0) return 0;
+  if (parts.length === 1) {
+    const s = stem(parts[0]);
+    let n = 0;
+    for (const ls of index.stemList) if (ls === s) n++;
+    return n;
+  }
+  const partStems = parts.map(stem);
+  let count = 0;
+  for (let i = 0; i + partStems.length <= index.stemList.length; i++) {
+    let ok = true;
+    for (let j = 0; j < partStems.length; j++) {
+      if (index.stemList[i + j] !== partStems[j]) { ok = false; break; }
+    }
+    if (ok) count++;
+  }
+  return count;
 }
 
 const JD_PHRASES = [
@@ -692,7 +882,32 @@ const JD_GENERIC_WORDS = [
   'requires', 'required', 'knows', 'known', 'pipeline', 'pipelines', 'strategies', 'strategy', 'strategic',
   'engineering', 'engineered', 'engineers', 'applications', 'application', 'software', 'technologies', 'technology',
   'tools', 'tool', 'systems', 'system', 'processes', 'process', 'designing', 'designed', 'implement', 'implements',
-  'implementing', 'implemented', 'design', 'analyze', 'analyzes', 'analyzing', 'analyzed', 'analysis'
+  'implementing', 'implemented', 'design', 'analyze', 'analyzes', 'analyzing', 'analyzed', 'analysis',
+  'remote', 'hybrid', 'onsite', 'office', 'location', 'located', 'headquarters', 'schedule',
+  'hours', 'hourly', 'weekly', 'monthly', 'annual', 'salary', 'compensation', 'benefits',
+  'usd', 'billion', 'million', 'annum', 'full', 'time', 'part', 'permanently', 'temporary',
+  'contract', 'contractor', 'freelance', 'internship', 'intern', 'entry', 'mid', 'seniority',
+  'level', 'levels', 'plus', 'prefer', 'prefers', 'preferred', 'nice', 'have', 'bonus',
+  'sponsorship', 'sponsor', 'visa', 'immigration', 'relocation', 'relocate',
+  'equal', 'opportunity', 'employer', 'diversity', 'inclusion', 'belonging', 'disability',
+  'veteran', 'status', 'race', 'gender', 'sex', 'orientation', 'religion', 'origin',
+  'privacy', 'notice', 'policy', 'policies', 'terms', 'conditions', 'data', 'collect',
+  'processed', 'processing', 'application', 'applications', 'submit', 'submitting', 'resume',
+  'resumes', 'cv', 'cover', 'letter', 'click', 'apply', 'button', 'link', 'online', 'website',
+  'posted', 'updated', 'closing', 'deadline', 'start', 'join', 'team', 'teams', 'member',
+  'members', 'colleagues', 'manager', 'managers', 'supervisor', 'leadership', 'company',
+  'companies', 'organization', 'organizations', 'department', 'departments', 'division',
+  'group', 'activity', 'activities', 'day', 'days', 'week', 'weeks', 'month', 'months',
+  'quarter', 'quarterly', 'file', 'files', 'document', 'documents', 'report', 'reports',
+  'reporting', 'meeting', 'meetings', 'agenda', 'email', 'emails', 'phone', 'call', 'calls',
+  'information', 'details', 'detail', 'description', 'following', 'follow', 'above', 'below',
+  'listed', 'list', 'please', 'kindly', 'however', 'therefore', 'according', 'per', 'eg',
+  'etc', 'ie', 'e.g', 'i.e', 'versus', 'regarding', 'regards', 'topic', 'topics', 'project',
+  'projects', 'task', 'tasks', 'goal', 'goals', 'objective', 'objectives', 'mission', 'vision',
+  'value', 'values', 'culture', 'environments', 'environment', 'industry', 'industries',
+  'client', 'clients', 'customer', 'customers', 'user', 'users', 'product', 'products',
+  'service', 'services', 'solution', 'solutions', 'platform', 'platforms', 'system', 'systems',
+  'tool', 'tools', 'process', 'processes', 'procedure', 'procedures'
 ];
 
 const JD_STOP_STEMS = new Set(JD_STOPWORDS.map(stem));
@@ -714,10 +929,7 @@ function isValidJDTerm(token: string): boolean {
   return true;
 }
 
-function computeJDCoverage(resumeText: string, jdText: string): JDCoverage {
-  const resumeTokens = tokenizeText(resumeText);
-  const resumeStems = new Set(resumeTokens.map(stem));
-
+function computeJDCoverage(resumeIndex: TextIndex, jdText: string): JDCoverage {
   const jdWordCounts = new Map<string, number>();
   for (const token of tokenizeText(jdText)) {
     if (isValidJDTerm(token)) {
@@ -738,7 +950,7 @@ function computeJDCoverage(resumeText: string, jdText: string): JDCoverage {
   const uncoveredWords: { word: string; count: number }[] = [];
   for (const [w, c] of jdWordCounts) {
     totalWords += c;
-    if (resumeStems.has(stem(w))) matchedWords += c;
+    if (termCovered(w, resumeIndex)) matchedWords += c;
     else uncoveredWords.push({ word: w, count: c });
   }
 
@@ -747,8 +959,7 @@ function computeJDCoverage(resumeText: string, jdText: string): JDCoverage {
   const uncoveredPhrases: { word: string; count: number }[] = [];
   for (const [phrase, c] of phraseCounts) {
     totalPhrases += c;
-    const allCovered = phrase.split(' ').every(p => resumeStems.has(stem(p)));
-    if (allCovered) matchedPhrases += c;
+    if (termCovered(phrase, resumeIndex)) matchedPhrases += c;
     else uncoveredPhrases.push({ word: phrase, count: c });
   }
 
@@ -756,7 +967,7 @@ function computeJDCoverage(resumeText: string, jdText: string): JDCoverage {
   const phraseCoverage = totalPhrases > 0 ? matchedPhrases / totalPhrases : 1;
   const coveragePercent =
     totalWords + totalPhrases > 0
-      ? Math.round(100 * (0.7 * wordCoverage + 0.3 * phraseCoverage))
+      ? Math.round(10000 * (0.7 * wordCoverage + 0.3 * phraseCoverage)) / 100
       : 100;
 
   const sortDesc = (a: { word: string; count: number }, b: { word: string; count: number }) => b.count - a.count;
@@ -772,9 +983,11 @@ function computeJDCoverage(resumeText: string, jdText: string): JDCoverage {
 }
 
 function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult {
-  const resumeLower = resumeText.toLowerCase();
   const jdLower = jdText.toLowerCase();
-  
+
+  // Deep resume index: normalized tokens + stems used for every coverage test.
+  const resumeIndex = buildTextIndex(resumeText);
+
   const hardSkills = extractHardSkills(jdText);
   const softSkills = extractSoftSkills(jdText);
   const otherKeywords = extractOtherKeywords(jdText);
@@ -804,24 +1017,27 @@ function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult
     jdWordFreq.set(w, (jdWordFreq.get(w) || 0) + 1);
   }
 
-  const coverage = computeJDCoverage(resumeText, jdText);
+  const coverage = computeJDCoverage(resumeIndex, jdText);
 
+  // EVERY uncovered JD word + phrase (not a capped sample) becomes part of the checklist.
   const coverageTerms: { word: string; count: number }[] = [
     ...coverage.uncoveredWords,
     ...coverage.uncoveredPhrases,
-  ]
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 24);
+  ].sort((a, b) => b.count - a.count);
+
+  const keywordStems = new Set(Array.from(keywordMap.keys()).map(k => stem(normalizeToken(k))));
 
   const jdTerms: KeywordResult[] = [];
   const jdSeen = new Set<string>();
   for (const term of coverageTerms) {
-    if (keywordMap.has(term.word) || jdSeen.has(term.word)) continue;
-    jdSeen.add(term.word);
+    const norm = normalizeToken(term.word);
+    if (keywordMap.has(term.word) || keywordStems.has(stem(norm)) || jdSeen.has(norm)) continue;
+    jdSeen.add(norm);
     jdTerms.push({
       word: term.word,
       inResume: false,
       frequency: term.count,
+      resumeFrequency: 0,
       jdFrequency: term.count,
       category: 'jd',
       excluded: false,
@@ -831,8 +1047,9 @@ function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult
   const keywords: KeywordResult[] = [
     ...Array.from(keywordMap.values()).map(k => ({
       ...k,
-      inResume: resumeLower.includes(k.word.toLowerCase()),
+      inResume: termCovered(k.word, resumeIndex),
       frequency: jdWordFreq.get(k.word.toLowerCase()) || k.jdFrequency,
+      resumeFrequency: countTermInIndex(k.word, resumeIndex),
       excluded: false,
     })),
     ...jdTerms,
@@ -850,8 +1067,11 @@ function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult
     };
   }
 
-  const kwMatch = Math.round(keywords.filter(k => k.inResume && !k.excluded).length / Math.max(keywords.filter(k => !k.excluded).length, 1) * 100);
-  const matchScore = Math.round(kwMatch * 0.5 + coverage.coveragePercent * 0.5);
+  const skillKeywords = keywords.filter(k => k.category !== 'jd' && !k.excluded);
+  const kwMatch = skillKeywords.length > 0
+    ? (skillKeywords.filter(k => k.inResume).length / skillKeywords.length) * 100
+    : coverage.coveragePercent;
+  const matchScore = Math.round((kwMatch * 0.5 + coverage.coveragePercent * 0.5) * 100) / 100;
 
   const suggestions: string[] = [];
   const missingHard = keywords.filter(k => k.category === 'hard' && !k.inResume && !k.excluded);
@@ -859,7 +1079,7 @@ function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult
 
   if (coverage.coveragePercent < 100) {
     const topUncovered = coverageTerms.slice(0, 6).map(t => t.word).join(', ');
-    suggestions.push(`Word-by-word JD coverage is ${coverage.coveragePercent}% (${coverage.matchedWords}/${coverage.totalWords} words, ${coverage.matchedPhrases}/${coverage.totalPhrases} phrases). Add missing terms like: ${topUncovered}.`);
+    suggestions.push(`Word-by-word JD coverage is ${fmtScore(coverage.coveragePercent)}% (${coverage.matchedWords}/${coverage.totalWords} words, ${coverage.matchedPhrases}/${coverage.totalPhrases} phrases). Add missing terms like: ${topUncovered}.`);
   }
   if (missingHard.length > 0) {
     suggestions.push(`Add hard skills: ${missingHard.slice(0, 5).map(k => k.word).join(', ')}.`);
@@ -870,12 +1090,14 @@ function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult
   if (categoryScores[0]?.score < 70) {
     suggestions.push('Improve hard skills match by adding relevant technical keywords.');
   }
-  if (matchScore >= 80) {
-    suggestions.push('Great match! Your resume aligns well with this position.');
+  if (matchScore >= 99) {
+    suggestions.push(`Near-perfect match (${fmtScore(matchScore)}%) — your resume covers the job description almost entirely.`);
+  } else if (matchScore >= 80) {
+    suggestions.push('Great match! Your resume aligns well with this position — add the remaining terms to push toward 99.99%.');
   } else if (matchScore >= 60) {
-    suggestions.push('Good start. Add a few more keywords to reach the 80+ target.');
+    suggestions.push('Good start. Add the missing terms from the Complete Skill Match List to reach the 80+ target.');
   } else {
-    suggestions.push('Significant gaps found. Consider tailoring your resume more closely to this job.');
+    suggestions.push('Significant gaps found. Cover every item in the Complete Skill Match List to maximize your score.');
   }
 
   const responsibilities = extractJDSection(jdText, ['responsible', 'responsibilities', 'duties', 'you will', 'role']);
@@ -933,7 +1155,7 @@ function extractHardSkills(text: string): { word: string; frequency: number }[] 
   
   const found: { word: string; frequency: number }[] = [];
   for (const skill of hardSkillPatterns) {
-    const regex = new RegExp(`\\b${skill.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+    const regex = new RegExp(`(?<![a-z0-9])${skill.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9])`, 'gi');
     const matches = lower.match(regex);
     if (matches) {
       found.push({ word: skill, frequency: matches.length });
@@ -954,7 +1176,7 @@ function extractSoftSkills(text: string): { word: string; frequency: number }[] 
   
   const found: { word: string; frequency: number }[] = [];
   for (const skill of softSkillPatterns) {
-    const regex = new RegExp(`\\b${skill.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+    const regex = new RegExp(`(?<![a-z0-9])${skill.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9])`, 'gi');
     const matches = lower.match(regex);
     if (matches) {
       found.push({ word: skill, frequency: matches.length });
@@ -978,7 +1200,7 @@ function extractOtherKeywords(text: string): { word: string; frequency: number }
   
   const found: { word: string; frequency: number }[] = [];
   for (const keyword of otherPatterns) {
-    const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+    const regex = new RegExp(`(?<![a-z0-9])${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9])`, 'gi');
     const matches = lower.match(regex);
     if (matches) {
       found.push({ word: keyword, frequency: matches.length });
@@ -999,7 +1221,7 @@ function extractDegreeTitle(text: string): { word: string; frequency: number }[]
   
   const found: { word: string; frequency: number }[] = [];
   for (const keyword of degreePatterns) {
-    const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+    const regex = new RegExp(`(?<![a-z0-9])${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9])`, 'gi');
     const matches = lower.match(regex);
     if (matches) {
       found.push({ word: keyword, frequency: matches.length });
@@ -1048,7 +1270,7 @@ function generatePDF(updatedResume: string, analysis: AnalysisResult, selectedKe
   doc.setFontSize(10);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(100);
-  doc.text(`Generated: ${new Date().toLocaleDateString()} | Match Score: ${analysis.matchScore}% | Keywords Added: ${selectedKeywords.length}`, margin, yPosition);
+  doc.text(`Generated: ${new Date().toLocaleDateString()} | Match Score: ${fmtScore(analysis.matchScore)}% | Keywords Added: ${selectedKeywords.length}`, margin, yPosition);
   yPosition += 8;
 
   doc.setDrawColor(200);
@@ -1089,7 +1311,7 @@ function generatePDF(updatedResume: string, analysis: AnalysisResult, selectedKe
       yPosition = margin;
     }
 
-    if (line.startsWith('Key Skills') || line.startsWith('Additional Experience')) {
+    if (line.startsWith('Key Skills') || line.startsWith('Additional Experience') || line.startsWith('Additional Keywords')) {
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(99, 102, 241);
       const sectionLines = doc.splitTextToSize(line, maxWidth);
