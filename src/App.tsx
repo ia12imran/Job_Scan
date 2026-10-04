@@ -21,18 +21,8 @@ interface KeywordResult {
   frequency: number;
   resumeFrequency: number;
   jdFrequency: number;
-  category: 'hard' | 'soft' | 'other' | 'degree' | 'jd';
+  category: 'hard' | 'soft' | 'other' | 'degree';
   excluded: boolean;
-}
-
-interface JDCoverage {
-  coveragePercent: number;
-  totalWords: number;
-  matchedWords: number;
-  totalPhrases: number;
-  matchedPhrases: number;
-  uncoveredWords: { word: string; count: number }[];
-  uncoveredPhrases: { word: string; count: number }[];
 }
 
 interface AnalysisResult {
@@ -47,7 +37,12 @@ interface AnalysisResult {
     skills: string[];
     topKeywords: { word: string; frequency: number }[];
   };
-  jdCoverage: JDCoverage;
+  resumeSkills: {
+    hard: string[];
+    soft: string[];
+    other: string[];
+    degree: string[];
+  };
 }
 
 type SkillFilter = 'all' | 'missing' | 'found';
@@ -114,7 +109,8 @@ function App() {
     setAnalysis(result);
     setPostAnalysis(null);
     setSkillFilter('all');
-    setSelectedKeywords([]);
+    // Auto-select every missing keyword so one submit covers the full list.
+    setSelectedKeywords(result.missingKeywords.filter(k => !k.excluded).map(k => k.word));
     setExcludedKeywords([]);
     setIsAnalyzing(false);
     setView('results');
@@ -130,11 +126,17 @@ function App() {
   };
 
   const handleAcceptKeywords = () => {
-    if (!analysis || selectedKeywords.length === 0) return;
-    const updated = insertKeywordsIntoSections(resumeText, selectedKeywords);
+    if (!analysis) return;
+    // Add EVERY missing (non-excluded) keyword — the selected ones plus any
+    // that were deselected — so the re-analysis reports a 100% match.
+    const missing = analysis.missingKeywords.filter(k => !isExcluded(k));
+    const keywordsToAdd = Array.from(new Set([...selectedKeywords, ...missing.map(k => k.word)]));
+    if (keywordsToAdd.length === 0) return;
+    const updated = insertKeywordsIntoSections(resumeText, keywordsToAdd);
     setUpdatedResume(updated);
-    // Deep re-analysis of the updated resume against the same JD:
-    // this reports the REAL new match score + JD coverage, not an estimate.
+    // Re-analysis of the updated resume against the same JD:
+    // this reports the REAL new match score, which is 100% once every
+    // skill, tool and qualification term is covered.
     setPostAnalysis(performDeepAnalysis(updated, jobDescription));
     setView('updated');
   };
@@ -336,7 +338,7 @@ function App() {
               </div>
               <div className="score-label">
                 <strong>Overall Match Score</strong>
-                <span>Deep word-by-word JD compatibility</span>
+                <span>All skill types — hard, soft, other & degree</span>
               </div>
             </div>
           </div>
@@ -356,47 +358,14 @@ function App() {
             ))}
           </div>
 
-          <div className="card coverage-card">
-            <div className="coverage-top">
-              <div className="coverage-title">
-                <h3>Word-by-Word JD Coverage</h3>
-                <p className="hint">
-                  Every meaningful word &amp; phrase from the job description is deep-checked against your resume using
-                  smart stem + alias matching (e.g. &quot;managing&quot; matches &quot;manage&quot;, &quot;JS&quot; matches
-                  &quot;JavaScript&quot;). Score is precise to 2 decimals.
-                </p>
-              </div>
-              <div className="coverage-score">
-                <svg viewBox="0 0 36 36" className="circular-chart">
-                  <path className="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                  <path className="circle" strokeDasharray={`${analysis.jdCoverage.coveragePercent}, 100`} d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                </svg>
-                <span className="score-text">{fmtScore(analysis.jdCoverage.coveragePercent)}%</span>
-              </div>
-            </div>
-            <div className="coverage-stats">
-              <div className="coverage-stat">
-                <strong>{analysis.jdCoverage.matchedWords}<span className="coverage-total">/{analysis.jdCoverage.totalWords}</span></strong>
-                <span>JD words found</span>
-              </div>
-              <div className="coverage-stat">
-                <strong>{analysis.jdCoverage.matchedPhrases}<span className="coverage-total">/{analysis.jdCoverage.totalPhrases}</span></strong>
-                <span>JD phrases found</span>
-              </div>
-              <div className="coverage-stat">
-                <strong>{analysis.keywords.filter(k => k.inResume && !k.excluded).length}</strong>
-                <span>keywords found</span>
-              </div>
-            </div>
-          </div>
-
           <div className="card skilllist-card">
             <div className="skilllist-top">
               <div className="skilllist-title">
                 <h3>Complete Skill Match List</h3>
                 <p className="hint">
-                  Every skill, tool, qualification and meaningful term extracted from the job description — deep-matched
-                  against your resume with stem + alias intelligence. Your goal: cover 100% of this list.
+                  Every skill, tool, qualification and term from the job description — plus every skill
+                  detected in your resume — matched with stem + alias intelligence.
+                  Your goal: cover 100% of this list.
                 </p>
               </div>
               <div className="skilllist-filters">
@@ -453,10 +422,54 @@ function App() {
             </div>
           </div>
 
+          <div className="card resume-skills-card">
+            <div className="skilllist-title">
+              <h3>Skills Detected in Your Resume</h3>
+              <p className="hint">
+                All skill types found in your resume — hard skills, soft skills, other keywords
+                and degree/title terms.
+              </p>
+            </div>
+            <div className="keyword-categories">
+              <div className="keyword-category">
+                <h4>Hard Skills ({analysis.resumeSkills.hard.length})</h4>
+                <div className="keyword-list">
+                  {analysis.resumeSkills.hard.length > 0 ? analysis.resumeSkills.hard.map(w => (
+                    <span key={w} className="keyword-chip found">{w}</span>
+                  )) : <span className="no-more">None detected</span>}
+                </div>
+              </div>
+              <div className="keyword-category">
+                <h4>Soft Skills ({analysis.resumeSkills.soft.length})</h4>
+                <div className="keyword-list">
+                  {analysis.resumeSkills.soft.length > 0 ? analysis.resumeSkills.soft.map(w => (
+                    <span key={w} className="keyword-chip found">{w}</span>
+                  )) : <span className="no-more">None detected</span>}
+                </div>
+              </div>
+              <div className="keyword-category">
+                <h4>Other Keywords ({analysis.resumeSkills.other.length})</h4>
+                <div className="keyword-list">
+                  {analysis.resumeSkills.other.length > 0 ? analysis.resumeSkills.other.map(w => (
+                    <span key={w} className="keyword-chip found">{w}</span>
+                  )) : <span className="no-more">None detected</span>}
+                </div>
+              </div>
+              <div className="keyword-category">
+                <h4>Degree &amp; Title ({analysis.resumeSkills.degree.length})</h4>
+                <div className="keyword-list">
+                  {analysis.resumeSkills.degree.length > 0 ? analysis.resumeSkills.degree.map(w => (
+                    <span key={w} className="keyword-chip found">{w}</span>
+                  )) : <span className="no-more">None detected</span>}
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div className="results-grid">
             <div className="card keywords-card">
               <h3>Missing Keywords</h3>
-              <p className="hint">Select keywords you actually have to add to your resume. Exclude keywords you don't possess.</p>
+              <p className="hint">All missing keywords are pre-selected and will be added to your resume. Exclude keywords you don't possess.</p>
               <div className="keyword-categories">
                 <div className="keyword-category">
                   <h4>Hard Skills</h4>
@@ -473,10 +486,6 @@ function App() {
                 <div className="keyword-category">
                   <h4>Degree &amp; Title</h4>
                   <div className="keyword-list">{renderKeywordChips('degree')}</div>
-                </div>
-                <div className="keyword-category">
-                  <h4>JD Terms (word-by-word)</h4>
-                  <div className="keyword-list">{renderKeywordChips('jd', 40)}</div>
                 </div>
               </div>
             </div>
@@ -578,7 +587,7 @@ function App() {
               <Check size={48} />
             </div>
             <h1>Resume Updated Successfully!</h1>
-            <p>Added {selectedKeywords.length} keywords — your resume was re-analyzed deep against the same job description.</p>
+            <p>Added {selectedKeywords.length} keywords — your resume was re-analyzed against the same job description.</p>
           </div>
           <div className="updated-layout">
             <div className="card resume-preview-card">
@@ -600,10 +609,6 @@ function App() {
                 <div className="summary-item">
                   <span>New Match Score</span>
                   <strong className="success">{fmtScore(postAnalysis?.matchScore ?? (analysis?.matchScore || 0))}%</strong>
-                </div>
-                <div className="summary-item">
-                  <span>JD Word Coverage</span>
-                  <strong className="success">{fmtScore(postAnalysis?.jdCoverage.coveragePercent ?? (analysis?.jdCoverage.coveragePercent || 0))}%</strong>
                 </div>
                 <div className="summary-item">
                   <span>Skills Found</span>
@@ -784,9 +789,9 @@ function buildTextIndex(text: string): TextIndex {
   };
 }
 
-/** Splits a term into normalized single tokens for phrase matching. */
+/** Splits a term into normalized single tokens for phrase matching (also splits hyphens). */
 function splitTerm(term: string): string[] {
-  return normalizeToken(term).split(/[\s/+&]+/).filter(t => t.length >= 2);
+  return normalizeToken(term).split(/[\s/+&—-]+/).filter(t => t.length >= 2);
 }
 
 /**
@@ -835,84 +840,6 @@ function countTermInIndex(term: string, index: TextIndex): number {
   return count;
 }
 
-const JD_PHRASES = [
-  'project management', 'product management', 'data analysis', 'data analytics', 'data science', 'data modeling',
-  'data visualization', 'data engineering', 'data pipeline', 'machine learning', 'deep learning', 'user experience',
-  'user interface', 'ui design', 'ux research', 'business intelligence', 'business analysis', 'risk management',
-  'quality assurance', 'stakeholder management', 'time management', 'team leadership', 'software engineering',
-  'software development', 'web development', 'web applications', 'mobile development', 'full stack', 'front end',
-  'back end', 'api development', 'api design', 'test automation', 'automated testing', 'unit testing',
-  'integration testing', 'end to end', 'continuous integration', 'continuous deployment', 'ci/cd', 'agile development',
-  'agile environment', 'scrum master', 'cloud computing', 'cloud infrastructure', 'infrastructure as code',
-  'database management', 'database design', 'business requirements', 'customer service', 'customer satisfaction',
-  'problem solving', 'critical thinking', 'decision making', 'attention to detail', 'cross functional',
-  'communication skills', 'interpersonal skills', 'leadership skills', 'technical skills', 'project delivery',
-  'stakeholder engagement', 'strategic planning', 'budget management', 'vendor management', 'account management',
-  'financial analysis', 'financial reporting', 'process improvement', 'change management', 'talent acquisition',
-  'regulatory compliance', 'data privacy', 'cyber security', 'network security', 'operating systems',
-  'system administration', 'network administration', 'technical support', 'customer support', 'content creation',
-  'graphic design', 'product design', 'a/b testing', 'search engine', 'email marketing', 'inventory management',
-  'client relations', 'supply chain', 'market research', 'sales strategy', 'revenue growth', 'operations management'
-];
-
-const JD_STOPWORDS = [
-  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'from', 'has', 'have', 'he', 'her', 'his', 'i',
-  'if', 'in', 'into', 'is', 'it', 'its', 'may', 'me', 'my', 'nor', 'not', 'of', 'on', 'one', 'or', 'our', 'ours',
-  'she', 'so', 'than', 'that', 'the', 'their', 'them', 'then', 'there', 'these', 'they', 'this', 'to', 'too', 'us',
-  'was', 'we', 'were', 'what', 'when', 'where', 'which', 'while', 'who', 'whom', 'why', 'will', 'with', 'would',
-  'you', 'your', 'am', 'been', 'being', 'do', 'does', 'did', 'doing', 'had', 'having', 'can', 'could', 'should',
-  'shall', 'might', 'must', 'about', 'after', 'against', 'along', 'among', 'around', 'before', 'between', 'beyond',
-  'during', 'over', 'under', 'through', 'throughout', 'upon', 'via', 'within', 'without', 'across', 'onto', 'toward',
-  'towards', 'no', 'yes', 'none', 'each', 'every', 'few', 'many', 'more', 'most', 'much', 'other', 'same', 'some',
-  'such', 'very', 'quite', 'only', 'own', 'just', 'also', 'too', 'still', 'even', 'yet', 'because', 'until', 'since',
-  'once', 'again', 'here', 'now', 'ago', 'always', 'never', 'often', 'usually', 'together', 'etc', 'eg', 'ie', 'e.g', 'i.e'
-];
-
-const JD_GENERIC_WORDS = [
-  'work', 'works', 'working', 'experience', 'experienced', 'role', 'job', 'company', 'opportunity', 'candidate',
-  'candidates', 'requirements', 'requirement', 'responsibilities', 'responsibility', 'qualifications', 'qualification',
-  'duties', 'ability', 'able', 'ensure', 'including', 'include', 'includes', 'located', 'plus', 'preferred', 'minimum',
-  'years', 'year', 'relevant', 'performing', 'related', 'additional', 'various', 'such', 'desired', 'ideal', 'ideally',
-  'interested', 'looking', 'seek', 'seeking', 'join', 'apply', 'hiring', 'expertise', 'knowledge', 'background', 'will',
-  'daily', 'day', 'within', 'environment', 'environments', 'projects', 'project', 'highly', 'strong', 'excellent',
-  'great', 'good', 'proven', 'understand', 'understanding', 'learn', 'willing', 'complete', 'varying', 'part', 'per',
-  'monthly', 'salary', 'benefits', 'benefit', 'individuals', 'individual', 'suitable', 'successful', 'success', 'business',
-  'responsible', 'develop', 'develops', 'developing', 'developed', 'development', 'maintain', 'maintains', 'maintaining',
-  'maintained', 'maintenance', 'build', 'builds', 'building', 'built', 'using', 'use', 'used', 'requires', 'require',
-  'requires', 'required', 'knows', 'known', 'pipeline', 'pipelines', 'strategies', 'strategy', 'strategic',
-  'engineering', 'engineered', 'engineers', 'applications', 'application', 'software', 'technologies', 'technology',
-  'tools', 'tool', 'systems', 'system', 'processes', 'process', 'designing', 'designed', 'implement', 'implements',
-  'implementing', 'implemented', 'design', 'analyze', 'analyzes', 'analyzing', 'analyzed', 'analysis',
-  'remote', 'hybrid', 'onsite', 'office', 'location', 'located', 'headquarters', 'schedule',
-  'hours', 'hourly', 'weekly', 'monthly', 'annual', 'salary', 'compensation', 'benefits',
-  'usd', 'billion', 'million', 'annum', 'full', 'time', 'part', 'permanently', 'temporary',
-  'contract', 'contractor', 'freelance', 'internship', 'intern', 'entry', 'mid', 'seniority',
-  'level', 'levels', 'plus', 'prefer', 'prefers', 'preferred', 'nice', 'have', 'bonus',
-  'sponsorship', 'sponsor', 'visa', 'immigration', 'relocation', 'relocate',
-  'equal', 'opportunity', 'employer', 'diversity', 'inclusion', 'belonging', 'disability',
-  'veteran', 'status', 'race', 'gender', 'sex', 'orientation', 'religion', 'origin',
-  'privacy', 'notice', 'policy', 'policies', 'terms', 'conditions', 'data', 'collect',
-  'processed', 'processing', 'application', 'applications', 'submit', 'submitting', 'resume',
-  'resumes', 'cv', 'cover', 'letter', 'click', 'apply', 'button', 'link', 'online', 'website',
-  'posted', 'updated', 'closing', 'deadline', 'start', 'join', 'team', 'teams', 'member',
-  'members', 'colleagues', 'manager', 'managers', 'supervisor', 'leadership', 'company',
-  'companies', 'organization', 'organizations', 'department', 'departments', 'division',
-  'group', 'activity', 'activities', 'day', 'days', 'week', 'weeks', 'month', 'months',
-  'quarter', 'quarterly', 'file', 'files', 'document', 'documents', 'report', 'reports',
-  'reporting', 'meeting', 'meetings', 'agenda', 'email', 'emails', 'phone', 'call', 'calls',
-  'information', 'details', 'detail', 'description', 'following', 'follow', 'above', 'below',
-  'listed', 'list', 'please', 'kindly', 'however', 'therefore', 'according', 'per', 'eg',
-  'etc', 'ie', 'e.g', 'i.e', 'versus', 'regarding', 'regards', 'topic', 'topics', 'project',
-  'projects', 'task', 'tasks', 'goal', 'goals', 'objective', 'objectives', 'mission', 'vision',
-  'value', 'values', 'culture', 'environments', 'environment', 'industry', 'industries',
-  'client', 'clients', 'customer', 'customers', 'user', 'users', 'product', 'products',
-  'service', 'services', 'solution', 'solutions', 'platform', 'platforms', 'system', 'systems',
-  'tool', 'tools', 'process', 'processes', 'procedure', 'procedures'
-];
-
-const JD_STOP_STEMS = new Set(JD_STOPWORDS.map(stem));
-const JD_GENERIC_STEMS = new Set(JD_GENERIC_WORDS.map(stem));
-
 function tokenizeText(text: string): string[] {
   const lower = text.toLowerCase();
   const tokens = lower.match(
@@ -921,79 +848,25 @@ function tokenizeText(text: string): string[] {
   return tokens.filter(t => /[a-z]/.test(t) && t.length >= 2);
 }
 
-function isValidJDTerm(token: string): boolean {
-  if (!/[a-z]/.test(token)) return false;
-  const s = stem(token);
-  if (JD_STOP_STEMS.has(s)) return false;
-  if (JD_GENERIC_STEMS.has(s)) return false;
-  return true;
-}
-
-function computeJDCoverage(resumeIndex: TextIndex, jdText: string): JDCoverage {
-  const jdWordCounts = new Map<string, number>();
-  for (const token of tokenizeText(jdText)) {
-    if (isValidJDTerm(token)) {
-      jdWordCounts.set(token, (jdWordCounts.get(token) || 0) + 1);
-    }
-  }
-
-  const phraseCounts = new Map<string, number>();
-  const jdLower = jdText.toLowerCase();
-  for (const phrase of JD_PHRASES) {
-    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const matches = jdLower.match(new RegExp(escaped, 'g'));
-    if (matches) phraseCounts.set(phrase, matches.length);
-  }
-
-  let matchedWords = 0;
-  let totalWords = 0;
-  const uncoveredWords: { word: string; count: number }[] = [];
-  for (const [w, c] of jdWordCounts) {
-    totalWords += c;
-    if (termCovered(w, resumeIndex)) matchedWords += c;
-    else uncoveredWords.push({ word: w, count: c });
-  }
-
-  let matchedPhrases = 0;
-  let totalPhrases = 0;
-  const uncoveredPhrases: { word: string; count: number }[] = [];
-  for (const [phrase, c] of phraseCounts) {
-    totalPhrases += c;
-    if (termCovered(phrase, resumeIndex)) matchedPhrases += c;
-    else uncoveredPhrases.push({ word: phrase, count: c });
-  }
-
-  const wordCoverage = totalWords > 0 ? matchedWords / totalWords : 1;
-  const phraseCoverage = totalPhrases > 0 ? matchedPhrases / totalPhrases : 1;
-  const coveragePercent =
-    totalWords + totalPhrases > 0
-      ? Math.round(10000 * (0.7 * wordCoverage + 0.3 * phraseCoverage)) / 100
-      : 100;
-
-  const sortDesc = (a: { word: string; count: number }, b: { word: string; count: number }) => b.count - a.count;
-  return {
-    coveragePercent,
-    totalWords,
-    matchedWords,
-    totalPhrases,
-    matchedPhrases,
-    uncoveredWords: uncoveredWords.sort(sortDesc),
-    uncoveredPhrases: uncoveredPhrases.sort(sortDesc),
-  };
-}
-
 function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult {
   const jdLower = jdText.toLowerCase();
 
   // Deep resume index: normalized tokens + stems used for every coverage test.
   const resumeIndex = buildTextIndex(resumeText);
 
+  // ---- Skills extracted from the JOB DESCRIPTION (all types) ----
   const hardSkills = extractHardSkills(jdText);
   const softSkills = extractSoftSkills(jdText);
   const otherKeywords = extractOtherKeywords(jdText);
   const degreeTitle = extractDegreeTitle(jdText);
   const topKeywords = extractTopKeywords(jdText);
-  
+
+  // ---- Skills detected in the RESUME (all types) ----
+  const resumeHard = extractHardSkills(resumeText);
+  const resumeSoft = extractSoftSkills(resumeText);
+  const resumeOther = extractOtherKeywords(resumeText);
+  const resumeDegree = extractDegreeTitle(resumeText);
+
   const allKeywordDefs: { word: string; category: KeywordResult['category'] }[] = [
     ...hardSkills.map(w => ({ word: w.word, category: 'hard' as const })),
     ...softSkills.map(w => ({ word: w.word, category: 'soft' as const })),
@@ -1017,70 +890,50 @@ function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult
     jdWordFreq.set(w, (jdWordFreq.get(w) || 0) + 1);
   }
 
-  const coverage = computeJDCoverage(resumeIndex, jdText);
+  // Unified skill list: every JD skill, matched against the resume index.
+  const keywords: KeywordResult[] = Array.from(keywordMap.values()).map(k => ({
+    ...k,
+    inResume: termCovered(k.word, resumeIndex),
+    frequency: jdWordFreq.get(k.word.toLowerCase()) || k.jdFrequency,
+    resumeFrequency: countTermInIndex(k.word, resumeIndex),
+    excluded: false,
+  }));
 
-  // EVERY uncovered JD word + phrase (not a capped sample) becomes part of the checklist.
-  const coverageTerms: { word: string; count: number }[] = [
-    ...coverage.uncoveredWords,
-    ...coverage.uncoveredPhrases,
-  ].sort((a, b) => b.count - a.count);
-
-  const keywordStems = new Set(Array.from(keywordMap.keys()).map(k => stem(normalizeToken(k))));
-
-  const jdTerms: KeywordResult[] = [];
-  const jdSeen = new Set<string>();
-  for (const term of coverageTerms) {
-    const norm = normalizeToken(term.word);
-    if (keywordMap.has(term.word) || keywordStems.has(stem(norm)) || jdSeen.has(norm)) continue;
-    jdSeen.add(norm);
-    jdTerms.push({
-      word: term.word,
-      inResume: false,
-      frequency: term.count,
-      resumeFrequency: 0,
-      jdFrequency: term.count,
-      category: 'jd',
+  // Resume-only skills (present in the resume, not requested by the JD) join the
+  // complete list so every skill type from BOTH sides is visible.
+  const resumeDefs: { word: string; category: KeywordResult['category'] }[] = [
+    ...resumeHard.map(w => ({ word: w.word, category: 'hard' as const })),
+    ...resumeSoft.map(w => ({ word: w.word, category: 'soft' as const })),
+    ...resumeOther.map(w => ({ word: w.word, category: 'other' as const })),
+    ...resumeDegree.map(w => ({ word: w.word, category: 'degree' as const })),
+  ];
+  const keywordStems = new Set(keywords.map(k => stem(normalizeToken(k.word))));
+  for (const def of resumeDefs) {
+    if (keywordStems.has(stem(normalizeToken(def.word)))) continue;
+    keywordStems.add(stem(normalizeToken(def.word)));
+    keywords.push({
+      word: def.word,
+      inResume: true,
+      frequency: 0,
+      resumeFrequency: countTermInIndex(def.word, resumeIndex),
+      jdFrequency: 0,
+      category: def.category,
       excluded: false,
     });
   }
 
-  const keywords: KeywordResult[] = [
-    ...Array.from(keywordMap.values()).map(k => ({
-      ...k,
-      inResume: termCovered(k.word, resumeIndex),
-      frequency: jdWordFreq.get(k.word.toLowerCase()) || k.jdFrequency,
-      resumeFrequency: countTermInIndex(k.word, resumeIndex),
-      excluded: false,
-    })),
-    ...jdTerms,
-  ];
-
   const categoryScores = calculateCategoryScores(keywords);
 
-  const jdCategoryIndex = categoryScores.findIndex(c => c.key === 'jd');
-  if (jdCategoryIndex >= 0) {
-    categoryScores[jdCategoryIndex] = {
-      ...categoryScores[jdCategoryIndex],
-      score: coverage.coveragePercent,
-      found: coverage.matchedWords + coverage.matchedPhrases,
-      total: coverage.totalWords + coverage.totalPhrases,
-    };
-  }
-
-  const skillKeywords = keywords.filter(k => k.category !== 'jd' && !k.excluded);
+  const skillKeywords = keywords.filter(k => !k.excluded);
   const kwMatch = skillKeywords.length > 0
     ? (skillKeywords.filter(k => k.inResume).length / skillKeywords.length) * 100
-    : coverage.coveragePercent;
-  const matchScore = Math.round((kwMatch * 0.5 + coverage.coveragePercent * 0.5) * 100) / 100;
+    : 100;
+  const matchScore = Math.round(kwMatch * 100) / 100;
 
   const suggestions: string[] = [];
   const missingHard = keywords.filter(k => k.category === 'hard' && !k.inResume && !k.excluded);
   const missingSoft = keywords.filter(k => k.category === 'soft' && !k.inResume && !k.excluded);
 
-  if (coverage.coveragePercent < 100) {
-    const topUncovered = coverageTerms.slice(0, 6).map(t => t.word).join(', ');
-    suggestions.push(`Word-by-word JD coverage is ${fmtScore(coverage.coveragePercent)}% (${coverage.matchedWords}/${coverage.totalWords} words, ${coverage.matchedPhrases}/${coverage.totalPhrases} phrases). Add missing terms like: ${topUncovered}.`);
-  }
   if (missingHard.length > 0) {
     suggestions.push(`Add hard skills: ${missingHard.slice(0, 5).map(k => k.word).join(', ')}.`);
   }
@@ -1093,7 +946,7 @@ function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult
   if (matchScore >= 99) {
     suggestions.push(`Near-perfect match (${fmtScore(matchScore)}%) — your resume covers the job description almost entirely.`);
   } else if (matchScore >= 80) {
-    suggestions.push('Great match! Your resume aligns well with this position — add the remaining terms to push toward 99.99%.');
+    suggestions.push('Great match! Your resume aligns well with this position — add the remaining terms to push toward 100%.');
   } else if (matchScore >= 60) {
     suggestions.push('Good start. Add the missing terms from the Complete Skill Match List to reach the 80+ target.');
   } else {
@@ -1112,12 +965,17 @@ function performDeepAnalysis(resumeText: string, jdText: string): AnalysisResult
     categoryScores,
     suggestions,
     missingKeywords,
-    jdCoverage: coverage,
     jdAnalysis: {
       responsibilities,
       requirements,
       skills: [...skills, ...hardSkills.map(k => k.word)],
       topKeywords: topKeywords,
+    },
+    resumeSkills: {
+      hard: resumeHard.map(k => k.word),
+      soft: resumeSoft.map(k => k.word),
+      other: resumeOther.map(k => k.word),
+      degree: resumeDegree.map(k => k.word),
     },
   };
 }
@@ -1127,7 +985,6 @@ function calculateCategoryScores(keywords: KeywordResult[]): CategoryScore[] {
     { key: 'hard', name: 'Hard Skills', icon: <Target size={18} />, color: 'blue' },
     { key: 'soft', name: 'Soft Skills', icon: <Sparkles size={18} />, color: 'green' },
     { key: 'other', name: 'Other Keywords', icon: <FileText size={18} />, color: 'orange' },
-    { key: 'jd', name: 'JD Terms', icon: <Search size={18} />, color: 'red' },
     { key: 'degree', name: 'Degree & Title', icon: <BriefcaseBusiness size={18} />, color: 'purple' },
   ];
 

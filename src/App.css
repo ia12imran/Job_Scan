@@ -885,7 +885,6 @@ body {
 .category-card.green .category-icon { background: var(--success-bg); color: var(--success); }
 .category-card.orange .category-icon { background: var(--warning-bg); color: var(--warning); }
 .category-card.purple .category-icon { background: #f3e8ff; color: #9333ea; }
-.category-card.red .category-icon { background: #fee2e2; color: #ef4444; }
 
 .category-header h4 {
   font-size: 14px;
@@ -911,7 +910,6 @@ body {
 .category-card.green .category-score { color: var(--success); }
 .category-card.orange .category-score { color: var(--warning); }
 .category-card.purple .category-score { color: #9333ea; }
-.category-card.red .category-score { color: #ef4444; }
 
 .missing-table {
   border: 1px solid var(--line);
@@ -972,7 +970,6 @@ body {
 .missing-cat.soft { background: var(--success-bg); color: var(--success); }
 .missing-cat.other { background: var(--warning-bg); color: var(--warning); }
 .missing-cat.degree { background: #f3e8ff; color: #9333ea; }
-.missing-cat.jd { background: #fee2e2; color: #ef4444; }
 
 .missing-freq {
   font-weight: 700;
@@ -1037,81 +1034,6 @@ body {
 .keyword-chip.selected .freq {
   background: rgba(37, 99, 235, 0.15);
   color: #2563eb;
-}
-
-.coverage-card {
-  margin-bottom: 28px;
-}
-
-.coverage-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.coverage-title h3 {
-  margin: 0 0 4px;
-  font-size: 18px;
-}
-
-.coverage-title .hint {
-  margin-bottom: 0;
-}
-
-.coverage-score {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.coverage-score .circular-chart {
-  width: 60px;
-  height: 60px;
-}
-
-.coverage-score .circle {
-  stroke: #ef4444;
-}
-
-.coverage-score .score-text {
-  font-weight: 800;
-  font-size: 14px;
-  color: var(--ink);
-}
-
-.coverage-stats {
-  display: flex;
-  gap: 32px;
-  flex-wrap: wrap;
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px dashed var(--line);
-}
-
-.coverage-stat strong {
-  font-size: 22px;
-  color: var(--ink);
-}
-
-.coverage-stat span {
-  display: block;
-  font-size: 11px;
-  color: var(--muted);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-top: 2px;
-}
-
-.coverage-stat .coverage-total {
-  display: inline;
-  font-size: 13px;
-  color: var(--muted);
-  font-weight: 700;
 }
 
 .no-more {
